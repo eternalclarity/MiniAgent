@@ -1,2 +1,2 @@
 # MiniAgent
-My first miniAgent project whick forks by hello-agents.
+My first miniAgent project which forks by hello-agents.
