@@ -5,6 +5,7 @@ from llm import OpenAICompatibleClient
 from tools import available_tools
 from prompt import Agent_SYSTEM_PROMPT
 from dotenv import load_dotenv
+from memory import load_memory
 
 
 def main():
@@ -17,12 +18,21 @@ def main():
 
     llm = OpenAICompatibleClient(MODEL_ID, API_KEY, BASE_URL)
 
-    # 2.初始化Agent的上下文记忆
+    # 2.初始化Agent的上下文记忆,和拒绝状态
     user_prompt = input("您打算去哪个城市旅行呢，我可以帮您推荐景点！\n")
-    prompt_context = [f"用户请求: {user_prompt}"]
+    agent_state = {
+        "rejected_count": 0,
+        "rejected_items": [],
+    }
 
-    # 3.运行主循环,限制5轮防止Agent可能出现失控情况
-    for i in range(5):
+    prompt_context = [
+        f"用户请求: {user_prompt}",
+        f"[Memory]: {load_memory()}",
+        "[Agent State]: rejected_count=0, rejected_items=[]"
+    ]
+
+    # 3.运行主循环,限制10轮防止Agent可能出现失控情况
+    for i in range(10):
         # 3.1 构建prompt,把上下文记忆一起发给llm
         full_prompt = "\n".join(prompt_context)
 
@@ -63,10 +73,39 @@ def main():
                 string=action_str,
                 flags=re.DOTALL
             )
+
+            if not final_match:
+                observation = "错误: Finish 格式不正确，请使用 Finish[最终答案]"
+                prompt_context.append(f"[Observation]: {observation}")
+                continue
+
             final_answer = final_match.group(1).strip()
-            print("\n" + "-" * 10 + "思考完成" + "-" * 10)
-            print(f"{final_answer}")
-            break
+            print("\n" + "-" * 10 + " 推荐结果 " + "-" * 10)
+            print(final_answer)
+
+            feedback = input("\n你接受这个推荐吗？如果不接受，请说原因：\n").strip()
+
+            if feedback in ["接受", "可以", "满意", "好", "yes", "y"]:
+                print("任务结束。祝您有一个愉快的旅程!")
+                break
+
+            agent_state["rejected_count"] += 1
+            agent_state["rejected_items"].append(final_answer)
+
+            prompt_context.append(f"[User Feedback]: 用户拒绝了推荐，原因是: {feedback}")
+            prompt_context.append(
+                f"[Agent State]: rejected_count={agent_state['rejected_count']}, "
+                f"rejected_items={agent_state['rejected_items']}"
+            )
+
+            if agent_state["rejected_count"] >= 3:
+                prompt_context.append(
+                    "[Observation]: 用户已经连续拒绝 3 次推荐。"
+                    "你必须反思之前推荐失败的原因，调整推荐策略，"
+                    "避开 rejected_items 中的推荐，并重新调用工具获取新方案。"
+                )
+
+            continue
 
         tool_name = re.search(r"(\w+)\(", action_str).group(1)
         args_str = re.search(r"\((.*)\)", action_str).group(1)

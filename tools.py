@@ -1,7 +1,11 @@
 import requests
 import os
+import re
+import json
 
 from tavily import TavilyClient
+from memory import load_memory, update_memory
+from datetime import date
 
 
 def get_weather(city: str) -> str:
@@ -68,8 +72,110 @@ def get_attraction(city: str, weather: str) -> str:
         return f"错误:执行Tavily搜索时出现问题 - {e}"
 
 
+def read_memory() -> str:
+    """
+    读取记忆
+    """
+
+    memory = load_memory()
+    return str(memory) if memory else "暂无用户偏好记忆"
+
+
+def save_memory(key, value: str) -> str:
+    """
+    保存记忆
+    """
+
+    update_memory(key, value)
+    return f"已保存用户偏好: {key} = {value}"
+
+
+def check_ticket_status(attraction: str, date_str: str = "") -> str:
+    """
+    查询景点门票状态。
+    """
+
+    api_key = os.getenv("TAVILY_API_KEY", "")
+    if not api_key:
+        return "错误:未配置TAVILY_API_KEY环境变量。"
+
+    if not date_str:
+        date_str = date.today().isoformat()
+
+    tavily = TavilyClient(api_key=api_key)
+
+    query = f"{attraction} {date_str} 门票 预约 售罄 余票"
+    response = tavily.search(
+        query=query,
+        search_depth="basic",
+        include_answer=True,
+        max_results=5
+    )
+
+    texts = []
+
+    if response.get("answer"):
+        texts.append(response["answer"])
+
+    for item in response.get("results", []):
+        texts.append(item.get("title", ""))
+        texts.append(item.get("content", ""))
+
+    text = "\n".join(texts)
+
+    sold_out_pattern = r"售罄|约满|已约满|无票|暂无余票|预约已满|sold out"
+    available_pattern = r"有票|可预约|余票|正常预约|可购买|available"
+
+    if re.search(sold_out_pattern, text, re.IGNORECASE):
+        status = "sold_out"
+        reason = "搜索结果中出现售罄、约满或无票相关信息"
+    elif re.search(available_pattern, text, re.IGNORECASE):
+        status = "available"
+        reason = "搜索结果中出现有票、可预约或余票相关信息"
+    else:
+        status = "unknown"
+        reason = "未能从搜索结果中可靠判断门票状态"
+
+    return json.dumps({
+        "attraction": attraction,
+        "date": date_str,
+        "status": status,
+        "reason": reason,
+        "query": query
+    }, ensure_ascii=False)
+
+
+def get_alternative_attraction(city: str, original: str, preference: str = "") -> str:
+    """
+    查询替代景点
+    """
+    api_key = os.getenv("TAVILY_API_KEY", "")
+    if not api_key:
+        return "错误: 未配置 TAVILY_API_KEY 环境变量。"
+
+    tavily = TavilyClient(api_key=api_key)
+    query = f"{city} {original} 门票售罄 替代景点推荐 {preference}"
+
+    response = tavily.search(query=query, search_depth="basic", include_answer=True)
+    if response.get("answer"):
+        return response["answer"]
+
+    results = response.get("results", [])
+    if not results:
+        return "没有找到合适的备选景点。"
+
+    return "\n".join(
+        f"- {item['title']}: {item['content']}"
+        for item in results[:3]
+    )
+
+
 # 工具字典:根据字符串找到函数
 available_tools = {
     "get_weather": get_weather,
     "get_attraction": get_attraction,
+    "read_memory": read_memory,
+    "save_memory": save_memory,
+    "check_ticket_status": check_ticket_status,
+    "get_alternative_attraction": get_alternative_attraction,
 }
